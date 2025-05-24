@@ -1,0 +1,79 @@
+read_blif runtime_results/cone.blif
+balance
+rewrite
+resub
+write_blif runtime_results/cone_opt.blif
+read_blif runtime_results/full_updated.blif
+write runtime_results/final_updated.aig
+read runtime_results/current.aig
+cec -m runtime_results/final_updated.aig
+read_blif runtime_results/cone.blif
+balance
+rewrite
+resub
+write_blif runtime_results/cone_opt.blif
+read_blif runtime_results/full_updated.blif
+write runtime_results/final_updated.aig
+read runtime_results/current.aig
+cec -n runtime_results/final_updated.aig
+read_blif runtime_results/cone.blif
+balance
+rewrite
+resub
+write_blif runtime_results/cone_opt.blif
+read_blif runtime_results/full_updated.blif
+write runtime_results/final_updated.aig
+cec -n runtime_results/final_updated.aig
+write runtime_results/final_cleaned.aig
+read runtime_results/current.aig
+cec -n runtime_results/final_cleaned.aig
+read_blif runtime_results/cone.blif
+balance
+rewrite
+resub
+write_blif runtime_results/cone_opt.blif
+read_blif runtime_results/final_cleaned.blif
+print_stats
+write runtime_results/final_cleaned.aig
+read runtime_results/current.aig
+cec -n runtime_results/final_cleaned.aig
+read_blif runtime_results/cone.blif
+balance
+rewrite
+resub
+write_blif runtime_results/cone_opt.blif
+read_blif runtime_results/final_cleaned.blif
+print_stats
+write runtime_results/final_cleaned.aig
+read runtime_results/current.aig
+cec -n runtime_results/final_cleaned.aig
+read_blif runtime_results/cone.blif
+balance
+rewrite
+resub
+write_blif runtime_results/cone_opt.blif
+read_blif runtime_results/final_cleaned.blif
+print_stats
+write runtime_results/final_cleaned.aig
+read runtime_results/current.aig
+cec -n runtime_results/final_cleaned.aig
+read_blif runtime_results/cone.blif
+balance
+rewrite
+resub
+write_blif runtime_results/cone_opt.blif
+read_blif runtime_results/final_cleaned.blif
+strash
+write runtime_results/final_cleaned.aig
+read runtime_results/current.aig
+cec -n runtime_results/final_cleaned.aig
+read ./testbenches/EPFL/adder.aig
+write /Users/ilo/Code/Roland/DRL_final_project/runtime_results/current.aig
+rewrite
+refactor
+resub -z
+rewrite -z
+write /Users/ilo/Code/Roland/DRL_final_project/runtime_results/temp.aig
+source -s abc.rc
+read /Users/ilo/Code/Roland/DRL_final_project/runtime_results/current.aig
+print_stats
