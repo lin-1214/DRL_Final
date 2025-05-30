@@ -15,12 +15,11 @@ def run_abc_env(env, command_type, iterations=1, output_dir = ""):
     base_name = os.path.splitext(os.path.basename(TEST_BENCH))[0]
     output_file = base_name + ".aig"
     temp_aig = os.path.join(output_dir, output_file)
-
+    print(temp_aig)
     # ABC command list
     commands = [
         f"read {env._current_aig}",
         f"&r {env._current_aig}",
-        f"print_stats",
         command,
         f"write {temp_aig}"
     ]
