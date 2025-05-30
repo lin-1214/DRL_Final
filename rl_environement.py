@@ -9,12 +9,13 @@ from copy import deepcopy
 from tqdm import tqdm, trange
 import uuid
 import numpy as np
-TEST_BENCH = "./testbenches/2025_IWLS_Contest_Benchmarks_020425/ex101.truth"
-
+TEST_BENCH = "./testbenches/EPFL/bar.aig"
+bench_mark_ands = 893  # Example benchmark value, adjust as needed
 import itertools
 import tempfile
 import os
-
+import time
+base_name = os.path.splitext(os.path.basename(TEST_BENCH))[0]
 class ABCEnv:
     def __init__(self, abc_path="./abc", truth_file=TEST_BENCH, alpha=1.0, beta=0.3):
         self.layer = 0
@@ -35,7 +36,6 @@ class ABCEnv:
         # Reward weights
         self.alpha = alpha
         self.beta = beta
-
         # Tracking
         self.prev_obs = None
         self.initial_obs = None
@@ -45,6 +45,7 @@ class ABCEnv:
         self.lut_threshold = 0.1
 
         # Initialize environment
+        
         self.reset()
         
     import random
@@ -108,24 +109,29 @@ class ABCEnv:
             return 0.0
         
         # Area estimation with interconnect consideration
-        current_area = current_obs['ands'] * (1 + math.log2(current_obs['ands'] / current_obs['levels']))
-        prev_area = self.prev_obs['ands'] * (1 + math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
-        
+        # current_area = current_obs['ands'] * (1 + math.log2(current_obs['ands'] / current_obs['levels']))
+        # prev_area = self.prev_obs['ands'] * (1 + math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
+        current_area = current_obs['ands']
+        prev_area = self.prev_obs['ands']
         
 
         # Delay estimation with fanout effects
-        current_delay = current_obs['levels'] * (1 + 0.1 * math.log2(current_obs['ands'] / current_obs['levels']))
-        prev_delay = self.prev_obs['levels'] * (1 + 0.1 * math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
-        
+        # current_delay = current_obs['levels'] * (1 + 0.1 * math.log2(current_obs['ands'] / current_obs['levels']))
+        # prev_delay = self.prev_obs['levels'] * (1 + 0.1 * math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
+        current_delay = current_obs['levels']
+        prev_delay = self.prev_obs['levels']
         # Relative improvements
         area_improvement = (prev_area - current_area) #/ prev_area
-        delay_improvement = (prev_delay - current_delay) / prev_delay
+        delay_improvement = (prev_delay - current_delay) 
         
         # Combined reward with technology-specific weights
         # reward = (self.alpha * area_improvement + 
         #          self.beta * delay_improvement)
-        reward = self.alpha * np.sign(area_improvement)*np.sqrt(abs(area_improvement)) + self.beta * np.sign(delay_improvement)*np.sqrt(abs(delay_improvement)) 
+        # print(f"[DEBUG] Area improvement: {area_improvement}, Delay improvement: {delay_improvement}")
+        # reward = self.alpha * np.sign(area_improvement)*np.sqrt(abs(area_improvement)) + self.beta * np.sign(delay_improvement)*np.sqrt(abs(delay_improvement)) 
+        reward = self.alpha * area_improvement 
         reward /= 64
+        
         return reward
 
     def step(self, action_index):
@@ -242,6 +248,7 @@ class ABCEnv:
         """
         Copy the current AIG file to a permanent location.
         """
+        print(output_path)
         shutil.copy(self._current_aig, output_path)
         print(f"[INFO] Final AIG saved to: {output_path}")
         
@@ -289,6 +296,7 @@ class ABCEnv:
             f"&mfs -e -W 20 -L 20; "
             f"&dc2"
         )
+        actions.append(macro_cmd)
         self.action_space = actions
         print("[INFO] Action space re-rolled:")
         for i, act in enumerate(self.action_space):
@@ -413,7 +421,7 @@ if __name__ == "__main__":
     # Initialize MCTS with appropriate parameters
     mcts = MacroMCTS(
         env, 
-        iterations=10,
+        iterations=100,
         rollout_depth=0,
         exploration_weight=1.414,  # Exploration parameter for UCT
     )
@@ -443,10 +451,16 @@ if __name__ == "__main__":
     #         best_ands = min(best_ands, obs['ands'])
     #         best_levels = min(best_levels, obs['levels'])
     complex = False
-    for step in tqdm(range(10), desc="Optimizing MCTS"):
+    start_time = time.time()
+    best_ands = initial_ands
+    best_run_time = float('inf')
+    best_commands_number = 0
+    command_number = 0
+    for step in tqdm(range(60), desc="Optimizing MCTS"):
         action_plan = mcts.search(obs)  # return top 5 actions
         total_reward = 0
         for idx, action in enumerate(action_plan):
+            command_number += 1
             print(f"\nStep {step+1}.{idx+1}: Action = {env.action_space[action]}")
             obs, reward, done, _ = env.step(action)
 
@@ -455,7 +469,11 @@ if __name__ == "__main__":
             print(f"Step Reward: {reward:.2f}")
             # print("1232132")
             total_reward += reward
-
+            if(obs['ands'] < best_ands):
+                best_ands = obs['ands']
+                best_run_time = time.time() - start_time
+                best_commands_number = command_number
+            
             # Track improvements in both metrics
             if obs['ands'] < best_ands or obs['levels'] < best_levels:
                 and_improvement = ((best_ands - obs['ands']) / best_ands) * 100
@@ -476,16 +494,27 @@ if __name__ == "__main__":
         if total_reward > 2000 and mcts.iterations > 100:
             mcts.iterations -= 50
         env.reroll_action_space(complex)
-    base_name = os.path.splitext(os.path.basename(TEST_BENCH))[0]
+    output_dir = "./output/ours/"
+    output_file = base_name + ".aig"
+    temp_aig = os.path.join(output_dir, output_file)
     # Create the output string by appending '.aig'
-    output_dir = "./output"
+    
+    os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, base_name + ".aig")
 
     env.export_final_aig(output_path)
-
     
+# Create the output string by appending '.aig'
+    output_file = "info_" + base_name + "_aig.txt"
+
     print(f"\nOptimization complete:")
     print(f"Initial ANDs: {initial_ands} -> Final: {obs['ands']} ({((initial_ands - obs['ands']) / initial_ands) * 100:.2f}%)")
     print(f"Initial Levels: {initial_levels} -> Final: {obs['levels']} ({((initial_levels - obs['levels']) / initial_levels) * 100:.2f}%)")
-
+    with open(os.path.join(output_dir, output_file), "w") as f:
+        f.write(f"Initial ANDs: {initial_ands} -> Final: {obs['ands']} ({((initial_ands - obs['ands']) / initial_ands) * 100:.2f}%)\n")
+        f.write(f"Initial Levels: {initial_levels} -> Final: {obs['levels']} ({((initial_levels - obs['levels']) / initial_levels) * 100:.2f}%)\n")
+        f.write(f"Best ANDs: {best_ands}\n")
+        f.write(f"Best run time: {best_run_time:.2f} seconds\n")
+        f.write(f"Best commands number: {best_commands_number}\n")
+        f.write(f"Output AIG file: {output_file}\n")
     env.close()
