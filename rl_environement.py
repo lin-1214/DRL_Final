@@ -7,37 +7,77 @@ import math
 from helper_functions import strip_ansi_escape_sequences, parse_abc_stats_line, detect_format
 from copy import deepcopy
 from tqdm import tqdm, trange
+import uuid
+import numpy as np
+TEST_BENCH = "./testbenches/2025_IWLS_Contest_Benchmarks_020425/ex101.truth"
 
-TEST_BENCH = "./testbenches/2025_IWLS_Contest_Benchmarks_020425/ex100.truth"
+import itertools
+import tempfile
+import os
 
 class ABCEnv:
     def __init__(self, abc_path="./abc", truth_file=TEST_BENCH, alpha=1.0, beta=0.3):
+        self.layer = 0
+        self._aig_copy_index = 1
         self.abc_path = abc_path
         self.benchmark_path = truth_file
         self.benchmark_type = detect_format(truth_file)
-        self.action_space = [
-            "rewrite", "rewrite -z", "balance",
-            "resub", "resub -z", "dc2",
-            "refactor", "refactor -z"
-        ]
-        
-        self._work_dir = os.path.abspath("runtime_results")
-        os.makedirs(self._work_dir, exist_ok=True)
+
+        # === Dynamic action space generation ===
+    
+        self.action_space = self._randomize_action_space()
+
+        # === Workspace setup ===
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._work_dir = self._temp_dir.name
         self._current_aig = os.path.join(self._work_dir, "current.aig")
-        
-        # Reward function coefficients
-        self.alpha = alpha  # Weight for node count reduction
-        self.beta = beta   # Weight for logic depth reduction
-        
-        # Initialize tracking variables
+
+        # Reward weights
+        self.alpha = alpha
+        self.beta = beta
+
+        # Tracking
         self.prev_obs = None
-        self.initial_obs = None  # Initialize here
+        self.initial_obs = None
+
+        # State-action LUT
+        self.optimization_lut = {}
+        self.lut_threshold = 0.1
+
+        # Initialize environment
+        self.reset()
         
-        # Add LUT for state-action mapping
-        self.optimization_lut = {}  # Key: state hash, Value: successful actions
-        self.lut_threshold = 0.1    # Minimum improvement to store in LUT
-        
-        self.reset()  # Call reset after initializing all attributes
+    import random
+
+    def _randomize_action_space(self):
+        # Fixed command categories
+        actions = []
+
+        # 1. Simple static actions
+        actions.extend(["rewrite", "rewrite -z", "balance", "refactor", "refactor -z", "resub -z"])
+
+        # 2. Randomized resub variant
+        k = random.choice([6, 8, 10, 12])
+        if random.random() < 0.5:
+            n = random.choice([2])
+            actions.append(f"resub -K {k} -N {n}")
+        else:
+            actions.append(f"resub -K {k}")
+
+        # 3. Randomized ABC9 macro command
+        dch = random.choice(["&dch", "&dch -f"])
+        k_if = random.choice([3, 4, 5])
+        macro_cmd = (
+            f"{dch}; "
+            f"&if -a -K {k_if}; "
+            f"&mfs -e -W 20 -L 20; "
+            f"&fx; &st; &put; balance"
+        )
+        actions.append(macro_cmd)
+
+        return actions
+
+
 
     def reset(self):
         if self.benchmark_type == "truth":
@@ -71,18 +111,21 @@ class ABCEnv:
         current_area = current_obs['ands'] * (1 + math.log2(current_obs['ands'] / current_obs['levels']))
         prev_area = self.prev_obs['ands'] * (1 + math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
         
+        
+
         # Delay estimation with fanout effects
         current_delay = current_obs['levels'] * (1 + 0.1 * math.log2(current_obs['ands'] / current_obs['levels']))
         prev_delay = self.prev_obs['levels'] * (1 + 0.1 * math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
         
         # Relative improvements
-        area_improvement = (prev_area - current_area) / prev_area
+        area_improvement = (prev_area - current_area) #/ prev_area
         delay_improvement = (prev_delay - current_delay) / prev_delay
         
         # Combined reward with technology-specific weights
-        reward = (self.alpha * area_improvement + 
-                 self.beta * delay_improvement)
-        
+        # reward = (self.alpha * area_improvement + 
+        #          self.beta * delay_improvement)
+        reward = self.alpha * np.sign(area_improvement)*np.sqrt(abs(area_improvement)) + self.beta * np.sign(delay_improvement)*np.sqrt(abs(delay_improvement)) 
+        reward /= 64
         return reward
 
     def step(self, action_index):
@@ -91,12 +134,13 @@ class ABCEnv:
 
         commands = [
             f"read {self._current_aig}",
+            f"&r {self._current_aig}",
             command,
             f"write {temp_aig}"
         ]
         self._run_abc(commands)
         shutil.move(temp_aig, self._current_aig)
-
+        # print(f"[DEBUG] Step applied: {command}, updated AIG: {self._current_aig}")
         current_obs = self._get_observation()
         reward = self.calculate_reward(current_obs)
         done = False
@@ -139,7 +183,7 @@ class ABCEnv:
 
     def render(self):
         obs = self._get_observation()
-        print(f"ANDs: {obs['ands']} | Levels: {obs['levels']}")
+        # print(f"ANDs: {obs['ands']} | Levels: {obs['levels']}")
 
     def get_state_hash(self, obs):
         """Create a hashable state representation"""
@@ -164,6 +208,92 @@ class ABCEnv:
             'depth_category': obs['levels'] // 10
         }
         return structure_features
+    
+    def __deepcopy__(self, memo):
+        # Create a new environment with the same init parameters
+        copied = ABCEnv(
+            abc_path=self.abc_path,
+            truth_file=self.benchmark_path,
+            alpha=self.alpha,
+            beta=self.beta
+        )
+        
+        #copy the action space
+        copied.action_space = deepcopy(self.action_space, memo)
+
+        # Copy observations and LUT if needed
+        copied.prev_obs = deepcopy(self.prev_obs, memo)
+        copied.initial_obs = deepcopy(self.initial_obs, memo)
+        copied.optimization_lut = deepcopy(self.optimization_lut, memo)
+
+       # Use sequential numbering for temp AIG files
+        self._aig_copy_index += 1
+        copied._aig_copy_index = self._aig_copy_index
+
+        new_aig_path = os.path.join(copied._work_dir, f"copied_{copied._aig_copy_index}.aig")
+        shutil.copy(self._current_aig, new_aig_path)
+        copied._current_aig = new_aig_path
+
+        # print(f"[DEBUG] Deepcopied AIG to: {new_aig_path}")
+
+        return copied
+    
+    def export_final_aig(self, output_path):
+        """
+        Copy the current AIG file to a permanent location.
+        """
+        shutil.copy(self._current_aig, output_path)
+        print(f"[INFO] Final AIG saved to: {output_path}")
+        
+    def reroll_action_space(self, complex = False):
+        """
+        Regenerate the randomized variants of resub and ABC9 macro command.
+        """
+        actions = []
+
+        # Static base commands
+        actions.extend(["rewrite", "rewrite -z", "balance", "refactor", "refactor -z", "resub -z"])
+
+        # Reroll resub command
+        if complex:
+            # append multiple resub commands with different K and N values
+            for k in [6, 8, 10, 12]:
+                if random.random() < 0.5:
+                    n = random.choice([2])
+                    actions.append(f"resub -K {k} -N {n}")
+                else:
+                    actions.append(f"resub -K {k}")
+        else:
+            k = random.choice([6, 8, 10, 12])
+            if random.random() < 0.5:
+                n = random.choice([2])
+                actions.append(f"resub -K {k} -N {n}")
+            else:
+                actions.append(f"resub -K {k}")
+
+        # Reroll ABC9 macro command
+        dch = random.choice(["&dch", "&dch -f"])
+        k_if = random.choice([3, 4, 5])
+        macro_cmd = (
+            f"{dch}; "
+            f"&if -a -K {k_if}; "
+            f"&mfs -e -W 20 -L 20; "
+            f"&fx; &st; &put; balance"
+        )
+
+        actions.append(macro_cmd)
+        ##&dch -f; &if -a -K 2; &mfs -e -W 20 -L 20; &dc2
+        macro_cmd = (
+            f"dch -f; "
+            f"&if -a -K 2; "
+            f"&mfs -e -W 20 -L 20; "
+            f"&dc2"
+        )
+        self.action_space = actions
+        print("[INFO] Action space re-rolled:")
+        for i, act in enumerate(self.action_space):
+            print(f"  [{i}] {act}")
+
 
 class MCTSNode:
     def __init__(self, state=None, parent=None, action=None):
@@ -191,36 +321,44 @@ class MCTSNode:
         return child
 
 class MacroMCTS:
-    def __init__(self, env, iterations=1000, rollout_depth=5, exploration_weight=1.414):
+    def __init__(self, env, iterations=500, rollout_depth=3, exploration_weight=1, sample_k=10):
         self.env = env
         self.iterations = iterations
         self.rollout_depth = rollout_depth
         self.exploration_weight = exploration_weight
+        self.sample_k = sample_k
         self.lut_use_probability = 0.7  # Probability to use LUT during rollout
 
     def search(self, initial_state):
         root = MCTSNode(state=initial_state)
         root.untried_actions = list(range(len(self.env.action_space)))
-
+        #root.untried_actions = random.sample(range(len(self.env.action_space)), self.sample_k)
         for _ in range(self.iterations):
+            layer = 0
             node = root
             env_state = deepcopy(self.env)
 
             # Selection
             while node.is_fully_expanded() and node.children:
+                layer += 1
                 action, node = node.best_child(self.exploration_weight)
                 _, _, _, _ = env_state.step(action)
 
             # Expansion
+            rollout_reward = 0
             if not node.is_fully_expanded():
+                # print(f"[DEBUG] Expanding node at layer {layer} with untried actions: {node.untried_actions}")
+                env_state.render()
                 action = random.choice(node.untried_actions)
                 obs, reward, done, _ = env_state.step(action)
+                rollout_reward += reward
                 new_node = node.expand(action, obs)
+                #new_node.untried_actions = random.sample(range(len(self.env.action_space)), self.sample_k)
                 new_node.untried_actions = list(range(len(self.env.action_space)))
                 node = new_node
-
+            # print(rollout_reward)
             # Rollout
-            rollout_reward = 0
+            # rollout_reward = 0
             for _ in range(self.rollout_depth):
                 action = random.randint(0, len(self.env.action_space) - 1)
                 _, reward, done, _ = env_state.step(action)
@@ -232,7 +370,19 @@ class MacroMCTS:
                 node.value += rollout_reward
                 node = node.parent
 
-        return root.best_child(c_param=0)[0]
+        #return root.best_child(c_param=0)[0]
+        actions = []
+        node = root
+        for _ in range(10):
+            if not node.children:
+                break
+            _, action, best_node = max(
+                [(child.value / child.visits, a, child) for a, child in node.children.items()],
+                key=lambda x: x[0]
+            )
+            actions.append(action)
+            node = best_node
+        return actions
 
     def rollout_policy(self, env_state):
         """Smart rollout using LUT when available"""
@@ -257,15 +407,15 @@ if __name__ == "__main__":
         abc_path="./abc/abc",
         truth_file=TEST_BENCH,
         alpha=1.0,    # Weight for node count reduction
-        beta=0.3      # Weight for logic depth reduction
+        beta=0.1      # Weight for logic depth reduction
     )
 
     # Initialize MCTS with appropriate parameters
     mcts = MacroMCTS(
         env, 
-        iterations=60,
-        rollout_depth=5,
-        exploration_weight=1.414
+        iterations=10,
+        rollout_depth=0,
+        exploration_weight=1.414,  # Exploration parameter for UCT
     )
     
     print("=== Starting MCTS optimization ===")
@@ -276,24 +426,63 @@ if __name__ == "__main__":
     best_levels = initial_levels
     steps_without_improvement = 0
     
-    for step in tqdm(range(60), desc="Optimizing MCTS"):
-        action = mcts.search(obs)
-        print(f"\nStep {step+1}: Action = {env.action_space[action]}")
-        obs, reward, done, _ = env.step(action)
+    # for step in tqdm(range(60), desc="Optimizing MCTS"):
+    #     action = mcts.search(obs)
+    #     print(f"\nStep {step+1}: Action = {env.action_space[action]}")
+    #     obs, reward, done, _ = env.step(action)
         
-        print(f"ANDs: {obs['ands']} (Initial: {initial_ands})")
-        print(f"Levels: {obs['levels']} (Initial: {initial_levels})")
-        print(f"Step Reward: {reward:.2f}")
+    #     print(f"ANDs: {obs['ands']} (Initial: {initial_ands})")
+    #     print(f"Levels: {obs['levels']} (Initial: {initial_levels})")
+    #     print(f"Step Reward: {reward:.2f}")
         
-        # Track improvements in both metrics
-        if obs['ands'] < best_ands or obs['levels'] < best_levels:
-            and_improvement = ((best_ands - obs['ands']) / best_ands) * 100
-            level_improvement = ((best_levels - obs['levels']) / best_levels) * 100
-            print(f"Improvements - ANDs: {and_improvement:.2f}% | Levels: {level_improvement:.2f}%")
-            best_ands = min(best_ands, obs['ands'])
-            best_levels = min(best_levels, obs['levels'])
-    
-            
+    #     # Track improvements in both metrics
+    #     if obs['ands'] < best_ands or obs['levels'] < best_levels:
+    #         and_improvement = ((best_ands - obs['ands']) / best_ands) * 100
+    #         level_improvement = ((best_levels - obs['levels']) / best_levels) * 100
+    #         print(f"Improvements - ANDs: {and_improvement:.2f}% | Levels: {level_improvement:.2f}%")
+    #         best_ands = min(best_ands, obs['ands'])
+    #         best_levels = min(best_levels, obs['levels'])
+    complex = False
+    for step in tqdm(range(10), desc="Optimizing MCTS"):
+        action_plan = mcts.search(obs)  # return top 5 actions
+        total_reward = 0
+        for idx, action in enumerate(action_plan):
+            print(f"\nStep {step+1}.{idx+1}: Action = {env.action_space[action]}")
+            obs, reward, done, _ = env.step(action)
+
+            print(f"ANDs: {obs['ands']} (Initial: {initial_ands})")
+            print(f"Levels: {obs['levels']} (Initial: {initial_levels})")
+            print(f"Step Reward: {reward:.2f}")
+            # print("1232132")
+            total_reward += reward
+
+            # Track improvements in both metrics
+            if obs['ands'] < best_ands or obs['levels'] < best_levels:
+                and_improvement = ((best_ands - obs['ands']) / best_ands) * 100
+                level_improvement = ((best_levels - obs['levels']) / best_levels) * 100
+                print(f"Improvements - ANDs: {and_improvement:.2f}% | Levels: {level_improvement:.2f}%")
+                best_ands = min(best_ands, obs['ands'])
+                best_levels = min(best_levels, obs['levels'])
+        #reroll the action space for each step
+        if total_reward < 100:
+            #make an uphill move (last index of action space)
+            index = len(env.action_space) - 1
+            env.step(index)
+        if total_reward < 200 and mcts.iterations < 300:
+            mcts.iterations += 50   
+        if total_reward < 500:
+            complex = True
+            # mcts.iterations += 50
+        if total_reward > 2000 and mcts.iterations > 100:
+            mcts.iterations -= 50
+        env.reroll_action_space(complex)
+    base_name = os.path.splitext(os.path.basename(TEST_BENCH))[0]
+    # Create the output string by appending '.aig'
+    output_dir = "./output"
+    output_path = os.path.join(output_dir, base_name + ".aig")
+
+    env.export_final_aig(output_path)
+
     
     print(f"\nOptimization complete:")
     print(f"Initial ANDs: {initial_ands} -> Final: {obs['ands']} ({((initial_ands - obs['ands']) / initial_ands) * 100:.2f}%)")
