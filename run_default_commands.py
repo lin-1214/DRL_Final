@@ -2,7 +2,6 @@ import os
 import subprocess
 import tempfile
 from rl_environment import ABCEnv
-import numpy as np
 import argparse
 def run_abc_env(env, command_type, iterations=1, output_dir = "", testbench = ""):
     # Generate the resyn2 command repeated 100 times
@@ -21,7 +20,7 @@ def run_abc_env(env, command_type, iterations=1, output_dir = "", testbench = ""
     if command_type == "resyn2":
         commands = [
             f"read {env._current_aig}",
-            f"&r {env._current_aig}",
+            f"source ./abc/abc.rc",
             command,
             f"write {temp_aig}",
             f"print_stats"
