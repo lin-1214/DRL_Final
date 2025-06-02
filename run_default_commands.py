@@ -75,7 +75,7 @@ if __name__ == "__main__":
     if args.command == "deepsyn":
         print("Running DeepSyn command...")
         output_dir = "./output/deepsyn"
-        run_abc_env(env, "&deepsyn -v", output_dir=output_dir)
+        run_abc_env(env, "&deepsyn -v -J 10", output_dir=output_dir)
     elif args.command == "resyn2":
         print(f"Running resyn2 command for {args.iterations} iterations...")
         output_dir = f"./output/resyn2_{args.iterations}"
