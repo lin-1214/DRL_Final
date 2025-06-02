@@ -9,7 +9,7 @@ from copy import deepcopy
 from tqdm import tqdm, trange
 import uuid
 import numpy as np
-TEST_BENCH = "./testbenches/EPFL/bar.aig"
+TEST_BENCH = "./testbenches/2025_IWLS_Contest_Benchmarks_020425/ex120.aig"
 bench_mark_ands = 893  # Example benchmark value, adjust as needed
 import itertools
 import tempfile
@@ -109,27 +109,26 @@ class ABCEnv:
             return 0.0
         
         # Area estimation with interconnect consideration
-        # current_area = current_obs['ands'] * (1 + math.log2(current_obs['ands'] / current_obs['levels']))
-        # prev_area = self.prev_obs['ands'] * (1 + math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
-        current_area = current_obs['ands']
-        prev_area = self.prev_obs['ands']
+        current_area = current_obs['ands'] * (1 + math.log2(current_obs['ands'] / current_obs['levels']))
+        prev_area = self.prev_obs['ands'] * (1 + math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
+        # current_area = current_obs['ands']
+        # prev_area = self.prev_obs['ands']
         
 
         # Delay estimation with fanout effects
-        # current_delay = current_obs['levels'] * (1 + 0.1 * math.log2(current_obs['ands'] / current_obs['levels']))
-        # prev_delay = self.prev_obs['levels'] * (1 + 0.1 * math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
-        current_delay = current_obs['levels']
-        prev_delay = self.prev_obs['levels']
+        current_delay = current_obs['levels'] * (1 + 0.1 * math.log2(current_obs['ands'] / current_obs['levels']))
+        prev_delay = self.prev_obs['levels'] * (1 + 0.1 * math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
+        # current_delay = current_obs['levels']
+        # prev_delay = self.prev_obs['levels']
         # Relative improvements
-        area_improvement = (prev_area - current_area) #/ prev_area
-        delay_improvement = (prev_delay - current_delay) 
-        
+        area_improvement = (prev_area - current_area) / prev_area
+        delay_improvement = (prev_delay - current_delay) / prev_delay
+
         # Combined reward with technology-specific weights
         # reward = (self.alpha * area_improvement + 
         #          self.beta * delay_improvement)
         # print(f"[DEBUG] Area improvement: {area_improvement}, Delay improvement: {delay_improvement}")
-        # reward = self.alpha * np.sign(area_improvement)*np.sqrt(abs(area_improvement)) + self.beta * np.sign(delay_improvement)*np.sqrt(abs(delay_improvement)) 
-        reward = self.alpha * area_improvement 
+        reward = self.alpha * np.sign(area_improvement)*np.sqrt(abs(area_improvement)) + self.beta * np.sign(delay_improvement)*np.sqrt(abs(delay_improvement)) 
         reward /= 64
         
         return reward
@@ -319,6 +318,8 @@ class MCTSNode:
     def best_child(self, c_param=1.414):
         choices = [(child.value / child.visits + c_param * math.sqrt(2 * math.log(self.visits) / child.visits), action, child)
                   for action, child in self.children.items()]
+        # choices = [(child.value / child.visits + math.sqrt( math.log/ 2*child.visits), action, child)
+        #           for action, child in self.children.items()]
         return max(choices, key=lambda x: x[0])[1:]
 
     def expand(self, action, state):
@@ -421,7 +422,7 @@ if __name__ == "__main__":
     # Initialize MCTS with appropriate parameters
     mcts = MacroMCTS(
         env, 
-        iterations=100,
+        iterations=150,
         rollout_depth=0,
         exploration_weight=1.414,  # Exploration parameter for UCT
     )
@@ -456,7 +457,7 @@ if __name__ == "__main__":
     best_run_time = float('inf')
     best_commands_number = 0
     command_number = 0
-    for step in tqdm(range(60), desc="Optimizing MCTS"):
+    for step in tqdm(range(100), desc="Optimizing MCTS"):
         action_plan = mcts.search(obs)  # return top 5 actions
         total_reward = 0
         for idx, action in enumerate(action_plan):
