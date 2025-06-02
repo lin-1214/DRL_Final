@@ -1,10 +1,10 @@
 import os
 import subprocess
 import tempfile
-from rl_environement import ABCEnv, TEST_BENCH
+from rl_environment import ABCEnv
 import numpy as np
 import argparse
-def run_abc_env(env, command_type, iterations=1, output_dir = ""):
+def run_abc_env(env, command_type, iterations=1, output_dir = "", testbench = ""):
     # Generate the resyn2 command repeated 100 times
     command = "\n".join([f"{command_type}"] * iterations)
     # Prepare output directory
@@ -12,17 +12,28 @@ def run_abc_env(env, command_type, iterations=1, output_dir = ""):
     os.makedirs(output_dir, exist_ok=True)
 
     # Generate output AIG file path
-    base_name = os.path.splitext(os.path.basename(TEST_BENCH))[0]
+    base_name = os.path.splitext(os.path.basename(testbench))[0]
     output_file = base_name + ".aig"
     temp_aig = os.path.join(output_dir, output_file)
     print(temp_aig)
     # ABC command list
-    commands = [
-        f"read {env._current_aig}",
-        f"&r {env._current_aig}",
-        command,
-        f"write {temp_aig}"
-    ]
+
+    if command_type == "resyn2":
+        commands = [
+            f"read {env._current_aig}",
+            f"&r {env._current_aig}",
+            command,
+            f"write {temp_aig}",
+            f"print_stats"
+        ]
+    else:
+        commands = [
+            f"read {env._current_aig}",
+            f"&r {env._current_aig}",
+            command,
+            f"write {temp_aig}",
+            f"print_stats"
+        ]
     
     joined = "\n".join(commands) + "\nquit\n"
 
@@ -41,8 +52,8 @@ def run_abc_env(env, command_type, iterations=1, output_dir = ""):
         raise
 
 if __name__ == "__main__":
-    # Initialize ABC environment
     parser = argparse.ArgumentParser(description="ABC environment command runner")
+    parser.add_argument('--testbench', required=True, help='Path to the testbench file')
     subparsers = parser.add_subparsers(dest="command", required=True, help="Command type")
 
     # Subparser for deepsyn (no additional args)
@@ -56,13 +67,15 @@ if __name__ == "__main__":
         default=1,
         help="Number of resyn2 iterations to apply"
     )
+    
+    args = parser.parse_args()
+    
     env = ABCEnv(
         abc_path="./abc/abc",
-        truth_file=TEST_BENCH,
+        truth_file=args.testbench,  # Use the testbench from command line
         alpha=1.0,
         beta=0.1
     )
-    args = parser.parse_args()
     # Create temporary working directory
     env._temp_dir = tempfile.TemporaryDirectory()
     env._work_dir = env._temp_dir.name
@@ -75,11 +88,11 @@ if __name__ == "__main__":
     if args.command == "deepsyn":
         print("Running DeepSyn command...")
         output_dir = "./output/deepsyn"
-        run_abc_env(env, "&deepsyn -v", output_dir=output_dir)
+        run_abc_env(env, "&deepsyn -v -J 10", output_dir=output_dir, testbench=args.testbench)
     elif args.command == "resyn2":
         print(f"Running resyn2 command for {args.iterations} iterations...")
         output_dir = f"./output/resyn2_{args.iterations}"
-        run_abc_env(env, "resyn2", iterations=args.iterations, output_dir=output_dir)
+        run_abc_env(env, "resyn2", iterations=args.iterations, output_dir=output_dir, testbench=args.testbench)
 
     # Show result and clean up
     env.render()

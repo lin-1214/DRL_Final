@@ -1,21 +1,6 @@
 # DRL_Final
 Final project for Deep Reinforcement Learning 2025@NTU
 
-## install
-pip install -r requirements.txt -f https://data.pyg.org/whl/torch-2.0.0+cu118.html
-sudo apt-get install doxygen
-cd to abc_py
-把pybind11 拉到abc_py下
-sudo apt-get update
-sudo apt-get install libboost-all-dev
-mkdir build 
-cd build 
-cmake .. with path of your abc
-example cmake .. -DABC_DIR=/home/dereklin1205/University/DRL/DRL_Final/abc_rl/abc_rl_dependency/abc
-
-
-# HOW TO USE RL ENVIRONMENT
-
 ## 📁 Project Structure
 
     ├── abc/                         # Cloned ABC logic synthesis tool
@@ -29,6 +14,9 @@ example cmake .. -DABC_DIR=/home/dereklin1205/University/DRL/DRL_Final/abc_rl/ab
         ├── 2025_IWLS_Contest_Benchmarks_020425/
         └── EPFL/
 
+## Getting Started
+
+> ⚠️ **Important**: All commands below should be executed from the root `DRL_Final` directory.
 
 ### 1. Clone the ABC Library
 
@@ -47,14 +35,45 @@ Use the provided `requirements.txt` to install the required packages:
 
 ### 3. Run the Environment
 
-Use `rl_environment.py` as the main entry point. It includes a simple demo in the `main()` function:
+Several scripts are provided to run different optimization approaches:
 
-    python rl_environment.py
+- Run MCTS-based optimization only:
+    ```bash
+    ./scripts/run_mcts.sh
+    ```
 
-## ⚠️ Notes
+- Run DeepSyn optimization only:
+    ```bash
+    ./scripts/run_deepsyn.sh
+    ```
 
-- Do not modify or run `helper_functions.py` directly. This file contains internal utilities and currently has unresolved issues.
-- Only use the `rl_environment.py` interface for interaction and extension.
+- Run Resyn2 optimization only:
+    ```bash
+    ./scripts/run_resyn2.sh
+    ```
+
+- Run all optimization methods sequentially:
+    ```bash
+    ./scripts/run_all.sh
+    ```
+
+By default, these scripts will process the benchmark `ex100.truth`. To process additional benchmarks, modify the `BENCHMARKS` array in the script by uncommenting the desired benchmark files:
+
+```bash
+BENCHMARKS=(
+    "$IWLS_DIR/ex100.truth" # Default
+    # "$IWLS_DIR/ex104.truth"
+    # "$IWLS_DIR/ex108.truth"
+    # "$IWLS_DIR/ex112.truth"
+    "$EPFL_DIR/adder.truth"  # Uncomment to process adder.truth
+    # "$EPFL_DIR/bar.truth"
+    # "$EPFL_DIR/max.truth"
+    # "$EPFL_DIR/sin.truth"
+)
+```
+
+The script will then process each uncommented benchmark sequentially through all optimization methods.
+
 
 
 
