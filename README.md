@@ -11,6 +11,7 @@ Final project for Deep Reinforcement Learning 2025@NTU
     ├── helper_functions.py          # Internal utility functions (⚠️ Do not use directly)
     ├── requirements.txt             # Python dependencies
     ├── rl_environment.py            # Main environment entry point (✅ use this)
+    ├── run_default_command.py       # Run built-in command in ABC(including resyn2 and deepsyn simulation)
     ├── runtime_results/             # Output directory
     │   └── current.aig              # Example AIG file
     └── testbenches/                 # Benchmark circuits
