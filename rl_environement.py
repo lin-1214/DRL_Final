@@ -457,7 +457,7 @@ if __name__ == "__main__":
     best_run_time = float('inf')
     best_commands_number = 0
     command_number = 0
-    for step in tqdm(range(100), desc="Optimizing MCTS"):
+    for step in tqdm(range(60), desc="Optimizing MCTS"):
         action_plan = mcts.search(obs)  # return top 5 actions
         total_reward = 0
         for idx, action in enumerate(action_plan):
