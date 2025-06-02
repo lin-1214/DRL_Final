@@ -9,13 +9,14 @@ from copy import deepcopy
 from tqdm import tqdm, trange
 import uuid
 import numpy as np
-TEST_BENCH = "./testbenches/2025_IWLS_Contest_Benchmarks_020425/ex120.aig"
-bench_mark_ands = 893  # Example benchmark value, adjust as needed
+
 import itertools
 import tempfile
 import os
-import time
-base_name = os.path.splitext(os.path.basename(TEST_BENCH))[0]
+import argparse
+
+TEST_BENCH = "./testbenches/2025_IWLS_Contest_Benchmarks_020425/ex100.truth"
+
 class ABCEnv:
     def __init__(self, abc_path="./abc", truth_file=TEST_BENCH, alpha=1.0, beta=0.3):
         self.layer = 0
@@ -36,6 +37,7 @@ class ABCEnv:
         # Reward weights
         self.alpha = alpha
         self.beta = beta
+
         # Tracking
         self.prev_obs = None
         self.initial_obs = None
@@ -45,7 +47,6 @@ class ABCEnv:
         self.lut_threshold = 0.1
 
         # Initialize environment
-        
         self.reset()
         
     import random
@@ -111,26 +112,21 @@ class ABCEnv:
         # Area estimation with interconnect consideration
         current_area = current_obs['ands'] * (1 + math.log2(current_obs['ands'] / current_obs['levels']))
         prev_area = self.prev_obs['ands'] * (1 + math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
-        # current_area = current_obs['ands']
-        # prev_area = self.prev_obs['ands']
         
-
         # Delay estimation with fanout effects
         current_delay = current_obs['levels'] * (1 + 0.1 * math.log2(current_obs['ands'] / current_obs['levels']))
         prev_delay = self.prev_obs['levels'] * (1 + 0.1 * math.log2(self.prev_obs['ands'] / self.prev_obs['levels']))
-        # current_delay = current_obs['levels']
-        # prev_delay = self.prev_obs['levels']
+        
         # Relative improvements
-        area_improvement = (prev_area - current_area) / prev_area
+        area_improvement = (prev_area - current_area) #/ prev_area
         delay_improvement = (prev_delay - current_delay) / prev_delay
-
+        
         # Combined reward with technology-specific weights
         # reward = (self.alpha * area_improvement + 
         #          self.beta * delay_improvement)
-        # print(f"[DEBUG] Area improvement: {area_improvement}, Delay improvement: {delay_improvement}")
-        reward = self.alpha * np.sign(area_improvement)*np.sqrt(abs(area_improvement)) + self.beta * np.sign(delay_improvement)*np.sqrt(abs(delay_improvement)) 
-        reward /= 64
-        
+        reward = self.alpha * np.sign(area_improvement) * np.sqrt(abs(area_improvement)) 
+        + self.beta * np.sign(delay_improvement) * np.sqrt(abs(delay_improvement))
+
         return reward
 
     def step(self, action_index):
@@ -188,7 +184,7 @@ class ABCEnv:
 
     def render(self):
         obs = self._get_observation()
-        # print(f"ANDs: {obs['ands']} | Levels: {obs['levels']}")
+        print(f"ANDs: {obs['ands']} | Levels: {obs['levels']}")
 
     def get_state_hash(self, obs):
         """Create a hashable state representation"""
@@ -247,7 +243,6 @@ class ABCEnv:
         """
         Copy the current AIG file to a permanent location.
         """
-        print(output_path)
         shutil.copy(self._current_aig, output_path)
         print(f"[INFO] Final AIG saved to: {output_path}")
         
@@ -258,7 +253,8 @@ class ABCEnv:
         actions = []
 
         # Static base commands
-        actions.extend(["rewrite", "rewrite -z", "balance", "refactor", "refactor -z", "resub -z"])
+        actions.extend(["rewrite", "rewrite -z", "balance", 
+                        "refactor", "refactor -z", "resub -z"])
 
         # Reroll resub command
         if complex:
@@ -286,21 +282,33 @@ class ABCEnv:
             f"&mfs -e -W 20 -L 20; "
             f"&fx; &st; &put; balance"
         )
+        actions.append(macro_cmd)
 
-        actions.append(macro_cmd)
-        ##&dch -f; &if -a -K 2; &mfs -e -W 20 -L 20; &dc2
-        macro_cmd = (
-            f"dch -f; "
-            f"&if -a -K 2; "
-            f"&mfs -e -W 20 -L 20; "
-            f"&dc2"
-        )
-        actions.append(macro_cmd)
         self.action_space = actions
-        print("[INFO] Action space re-rolled:")
+        # print("[INFO] Action space re-rolled:")
         for i, act in enumerate(self.action_space):
             print(f"  [{i}] {act}")
 
+
+class ReplayBuffer:
+    def __init__(self, capacity=10000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+        
+    def push(self, state, action, reward, next_state):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (state, action, reward, next_state)
+        self.position = (self.position + 1) % self.capacity
+        
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, min(batch_size, len(self.buffer)))
+        states, actions, rewards, next_states = zip(*batch)
+        return states, actions, rewards, next_states
+    
+    def __len__(self):
+        return len(self.buffer)
 
 class MCTSNode:
     def __init__(self, state=None, parent=None, action=None):
@@ -311,15 +319,28 @@ class MCTSNode:
         self.visits = 0
         self.value = 0
         self.untried_actions = []
+        self.ucb_stats = {'sum': 0, 'count': 0}  # Track UCB statistics
 
     def is_fully_expanded(self):
         return self.untried_actions is not None and len(self.untried_actions) == 0
 
+    def ucb_score(self, c_param=1.414, min_visits=5):
+        if self.visits < min_visits:
+            return float('inf')
+        
+        exploitation = self.value / self.visits
+        exploration = c_param * math.sqrt(math.log(self.parent.visits) / self.visits)
+        
+        # Include UCB statistics
+        ucb_bonus = 0
+        if self.ucb_stats['count'] > 0:
+            ucb_bonus = self.ucb_stats['sum'] / self.ucb_stats['count']
+        
+        return exploitation + exploration + 0.3 * ucb_bonus  # Weighted UCB bonus
+
     def best_child(self, c_param=1.414):
-        choices = [(child.value / child.visits + c_param * math.sqrt(2 * math.log(self.visits) / child.visits), action, child)
+        choices = [(child.ucb_score(c_param), action, child)
                   for action, child in self.children.items()]
-        # choices = [(child.value / child.visits + math.sqrt( math.log/ 2*child.visits), action, child)
-        #           for action, child in self.children.items()]
         return max(choices, key=lambda x: x[0])[1:]
 
     def expand(self, action, state):
@@ -330,21 +351,24 @@ class MCTSNode:
         return child
 
 class MacroMCTS:
-    def __init__(self, env, iterations=500, rollout_depth=3, exploration_weight=1, sample_k=10):
+    def __init__(self, env, iterations=500, rollout_depth=3, exploration_weight=1.414, sample_k=10):
         self.env = env
         self.iterations = iterations
         self.rollout_depth = rollout_depth
         self.exploration_weight = exploration_weight
         self.sample_k = sample_k
-        self.lut_use_probability = 0.7  # Probability to use LUT during rollout
+        self.lut_use_probability = 0.7
+        self.replay_buffer = ReplayBuffer()
+        self.ucb_threshold = 0.1
+        self.root = None  # Add root node storage
 
     def search(self, initial_state):
-        root = MCTSNode(state=initial_state)
-        root.untried_actions = list(range(len(self.env.action_space)))
-        #root.untried_actions = random.sample(range(len(self.env.action_space)), self.sample_k)
+        self.root = MCTSNode(state=initial_state)  # Store root node
+        self.root.untried_actions = list(range(len(self.env.action_space)))
+        
         for _ in range(self.iterations):
             layer = 0
-            node = root
+            node = self.root  # Use stored root
             env_state = deepcopy(self.env)
 
             # Selection
@@ -356,41 +380,47 @@ class MacroMCTS:
             # Expansion
             rollout_reward = 0
             if not node.is_fully_expanded():
-                # print(f"[DEBUG] Expanding node at layer {layer} with untried actions: {node.untried_actions}")
-                env_state.render()
                 action = random.choice(node.untried_actions)
                 obs, reward, done, _ = env_state.step(action)
                 rollout_reward += reward
                 new_node = node.expand(action, obs)
-                #new_node.untried_actions = random.sample(range(len(self.env.action_space)), self.sample_k)
                 new_node.untried_actions = list(range(len(self.env.action_space)))
                 node = new_node
-            # print(rollout_reward)
-            # Rollout
-            # rollout_reward = 0
-            for _ in range(self.rollout_depth):
-                action = random.randint(0, len(self.env.action_space) - 1)
-                _, reward, done, _ = env_state.step(action)
-                rollout_reward += reward
 
-            # Backpropagation
-            while node:
-                node.visits += 1
-                node.value += rollout_reward
-                node = node.parent
+            # Store experience in replay buffer
+            if rollout_reward > 0:
+                self.replay_buffer.push(
+                    node.state,
+                    action,
+                    rollout_reward,
+                    new_node.state
+                )
 
-        #return root.best_child(c_param=0)[0]
+            # Update UCB statistics
+            if rollout_reward > self.ucb_threshold:
+                node.ucb_stats['sum'] += rollout_reward
+                node.ucb_stats['count'] += 1
+
+            # Learn from replay buffer periodically
+            if len(self.replay_buffer) > 100 and random.random() < 0.1:
+                self.learn_from_replay()
+
+        # Return best action sequence, handling unvisited nodes
         actions = []
-        node = root
-        for _ in range(10):
+        node = self.root  # Use stored root
+        for _ in range(10):  # Get up to 10 actions
             if not node.children:
                 break
-            _, action, best_node = max(
-                [(child.value / child.visits, a, child) for a, child in node.children.items()],
-                key=lambda x: x[0]
-            )
+            # Handle unvisited nodes by adding a small epsilon
+            epsilon = 1e-6
+            action_scores = [(child.value / (child.visits + epsilon), a, child) 
+                            for a, child in node.children.items()]
+            if not action_scores:
+                break
+            best_score, action, best_node = max(action_scores, key=lambda x: x[0])
             actions.append(action)
             node = best_node
+        
         return actions
 
     def rollout_policy(self, env_state):
@@ -410,21 +440,54 @@ class MacroMCTS:
             obs, reward, done, _ = env_state.step(action)
             total_reward += reward
 
+    def learn_from_replay(self, batch_size=32):
+        """Learn from past experiences"""
+        if len(self.replay_buffer) < batch_size:
+            return
+            
+        states, actions, rewards, next_states = self.replay_buffer.sample(batch_size)
+        
+        # Update UCB statistics based on replay samples
+        for state, action, reward in zip(states, actions, rewards):
+            state_hash = self.env.get_state_hash(state)
+            if reward > self.ucb_threshold:
+                # Now using self.root instead of undefined root
+                for node in self.find_nodes_with_state(self.root, state_hash):
+                    node.ucb_stats['sum'] += reward
+                    node.ucb_stats['count'] += 1
+
+    def find_nodes_with_state(self, root, state_hash):
+        """Helper method to find nodes with matching state"""
+        nodes = []
+        if root.state and self.env.get_state_hash(root.state) == state_hash:
+            nodes.append(root)
+        for child in root.children.values():
+            nodes.extend(self.find_nodes_with_state(child, state_hash))
+        return nodes
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run RL environment optimization")
+    parser.add_argument('--testbench', required=True, help='Path to the testbench file')
+    args = parser.parse_args()
+
+    # Create output directory for RL results
+    output_dir = "./output/rl"
+    os.makedirs(output_dir, exist_ok=True)
+
     # Initialize environment with reward weights
     env = ABCEnv(
         abc_path="./abc/abc",
-        truth_file=TEST_BENCH,
-        alpha=1.0,    # Weight for node count reduction
-        beta=0.1      # Weight for logic depth reduction
+        truth_file=args.testbench,
+        alpha=1.0,
+        beta=0.3
     )
 
     # Initialize MCTS with appropriate parameters
     mcts = MacroMCTS(
         env, 
-        iterations=150,
+        iterations=100,
         rollout_depth=0,
-        exploration_weight=1.414,  # Exploration parameter for UCT
+        exploration_weight=1.414
     )
     
     print("=== Starting MCTS optimization ===")
@@ -433,48 +496,26 @@ if __name__ == "__main__":
     initial_levels = obs['levels']
     best_ands = initial_ands
     best_levels = initial_levels
-    steps_without_improvement = 0
-    
-    # for step in tqdm(range(60), desc="Optimizing MCTS"):
-    #     action = mcts.search(obs)
-    #     print(f"\nStep {step+1}: Action = {env.action_space[action]}")
-    #     obs, reward, done, _ = env.step(action)
-        
-    #     print(f"ANDs: {obs['ands']} (Initial: {initial_ands})")
-    #     print(f"Levels: {obs['levels']} (Initial: {initial_levels})")
-    #     print(f"Step Reward: {reward:.2f}")
-        
-    #     # Track improvements in both metrics
-    #     if obs['ands'] < best_ands or obs['levels'] < best_levels:
-    #         and_improvement = ((best_ands - obs['ands']) / best_ands) * 100
-    #         level_improvement = ((best_levels - obs['levels']) / best_levels) * 100
-    #         print(f"Improvements - ANDs: {and_improvement:.2f}% | Levels: {level_improvement:.2f}%")
-    #         best_ands = min(best_ands, obs['ands'])
-    #         best_levels = min(best_levels, obs['levels'])
+
+    # Generate output AIG file path
+    base_name = os.path.splitext(os.path.basename(args.testbench))[0]
+    output_file = base_name + ".aig"
+    output_path = os.path.join(output_dir, output_file)
+
     complex = False
-    start_time = time.time()
-    best_ands = initial_ands
-    best_run_time = float('inf')
-    best_commands_number = 0
-    command_number = 0
     for step in tqdm(range(60), desc="Optimizing MCTS"):
         action_plan = mcts.search(obs)  # return top 5 actions
         total_reward = 0
         for idx, action in enumerate(action_plan):
-            command_number += 1
             print(f"\nStep {step+1}.{idx+1}: Action = {env.action_space[action]}")
             obs, reward, done, _ = env.step(action)
 
             print(f"ANDs: {obs['ands']} (Initial: {initial_ands})")
             print(f"Levels: {obs['levels']} (Initial: {initial_levels})")
             print(f"Step Reward: {reward:.2f}")
-            # print("1232132")
+
             total_reward += reward
-            if(obs['ands'] < best_ands):
-                best_ands = obs['ands']
-                best_run_time = time.time() - start_time
-                best_commands_number = command_number
-            
+
             # Track improvements in both metrics
             if obs['ands'] < best_ands or obs['levels'] < best_levels:
                 and_improvement = ((best_ands - obs['ands']) / best_ands) * 100
@@ -495,27 +536,13 @@ if __name__ == "__main__":
         if total_reward > 2000 and mcts.iterations > 100:
             mcts.iterations -= 50
         env.reroll_action_space(complex)
-    output_dir = "./output/ours/"
-    output_file = base_name + ".aig"
-    temp_aig = os.path.join(output_dir, output_file)
-    # Create the output string by appending '.aig'
-    
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, base_name + ".aig")
 
+    # Export the final optimized circuit
     env.export_final_aig(output_path)
     
-# Create the output string by appending '.aig'
-    output_file = "info_" + base_name + "_aig.txt"
-
     print(f"\nOptimization complete:")
     print(f"Initial ANDs: {initial_ands} -> Final: {obs['ands']} ({((initial_ands - obs['ands']) / initial_ands) * 100:.2f}%)")
     print(f"Initial Levels: {initial_levels} -> Final: {obs['levels']} ({((initial_levels - obs['levels']) / initial_levels) * 100:.2f}%)")
-    with open(os.path.join(output_dir, output_file), "w") as f:
-        f.write(f"Initial ANDs: {initial_ands} -> Final: {obs['ands']} ({((initial_ands - obs['ands']) / initial_ands) * 100:.2f}%)\n")
-        f.write(f"Initial Levels: {initial_levels} -> Final: {obs['levels']} ({((initial_levels - obs['levels']) / initial_levels) * 100:.2f}%)\n")
-        f.write(f"Best ANDs: {best_ands}\n")
-        f.write(f"Best run time: {best_run_time:.2f} seconds\n")
-        f.write(f"Best commands number: {best_commands_number}\n")
-        f.write(f"Output AIG file: {output_file}\n")
+    print(f"Output saved to: {output_path}")
+
     env.close()

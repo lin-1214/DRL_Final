@@ -1,4 +1,4 @@
-from rl_environement import *
+from rl_environment import *
 import copy
 import random
 import math
